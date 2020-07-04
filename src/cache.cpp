@@ -20,37 +20,30 @@ struct reader_code_t: jit_generator_t {
     }
 
     void iter() {
-        auto addr = [&](int offset) { return ptr[reg_ptr + reg_offt + offset]; };
-        auto vmm = [&](int id) { return Vmm(id % 16); };
-
         int unroll = MAX2(1, MIN2(size_ / 64, 64));
 
-//        xor_(reg_offt, reg_offt);
+        xor_(reg_offt, reg_offt);
         mov(reg_i, size_ / 64 / unroll);
 
         Label l_step;
         L(l_step);
 
+        auto acc = [](int id) { return Vmm(8 + (id % 8)); };
+
         for (int ur = 0; ur < unroll; ++ur) {
-            if (1) {
-#if 1
-                mov(rax, addr(0));
-                mov(reg_offt, rax);
-#else
-                movups(vmm(ur), addr(0));
-                movq(reg_offt, vmm(ur));
-#endif
-                // mov(rax, addr(0));
-                // mov(reg_offt, rax);
-                // movq(reg_offt, vmm(0));
-                // mov(reg_offt, 0);
-                // vmovups(vmm(ur + 8), addr(32));
-                // mov(reg_offt, r11);
-            } else {
-                // vmovups(ptr[reg_ptr + reg_offt + ur * 64 + j * 16], Vmm((ur + j) % 16));
+            for (int j = 0; j < 2; ++j) {
+                auto addr = ptr[reg_ptr + reg_offt + ur * 64 + j * 32];
+                auto vmm = Vmm((ur + j) % 8);
+                if (1) {
+                    vmovups(vmm, addr);
+                } else {
+                    vmovups(addr, vmm);
+                }
+                vpaddd(acc(ur), acc(ur), vmm);
             }
         }
 
+        add(reg_offt, unroll * 64);
         dec(reg_i);
         jnz(l_step);
     }
@@ -76,7 +69,7 @@ struct reader_code_t: jit_generator_t {
     Reg64 reg_iter = r9;
     Reg64 reg_i = r10;
 
-    using Vmm = Xmm;
+    using Vmm = Ymm;
 };
 
 void fill_buffer_with_offsets(char *buffer, int size) {
@@ -96,7 +89,7 @@ void fill_buffer_with_offsets(char *buffer, int size) {
     }
 }
 
-void cache_props(int size, const char *argv) {
+void cache_props(int size) {
     const int N = size / (int)sizeof(size_t);
     const int ntimes = MAX2(10000 / MAX2((size / 8196), 1), 1);
 
@@ -113,21 +106,16 @@ void cache_props(int size, const char *argv) {
 
     double ns = t.sec() * 1e9;
     double ts = (double)t.ticks();
-    printf("%s\tsize:%d bytes\t\ttime:%g ns\t\tticks:%g\t\t\t", argv, size, ns, ts);
-    printf("time(per_cl):%g ns\t\tticks(per_cl):%g\n", ns * 64 / size, ts * 64 / size);
+    printf("size:%5s bytes \ttime:%10.2g ns\tticks:%10.2g\t", print_int(size), ns, ts);
+    printf("time(per_cl):%10.2g ns\tticks(per_cl):%10.2g\n", ns * 64 / size, ts * 64 / size);
 
     zfree(array);
 }
 
 void doit(int argc, char **argv) {
     for (int a = 0; a < argc; ++a) {
-        char mod = ' ';
-        int size = 1;
-        int count = sscanf(argv[a], "%d%c", &size, &mod);
-        if (mod == 'K' || mod == 'k') size *= 1024;
-        if (mod == 'M' || mod == 'm') size *= 1024 * 1024;
-        if (mod == 'G' || mod == 'g') size *= 1024 * 1024;
-        cache_props(size, argv[a]);
+        int size = parse_int(argv[a]);
+        cache_props(size);
     }
 }
 
